@@ -1,19 +1,30 @@
 package main
 
 import (
-	"github.com/Vaxuite/dbpool/config"
+	config2 "github.com/Vaxuite/dbpool/config"
+	"github.com/Vaxuite/dbpool/network"
 	"github.com/Vaxuite/dbpool/pool"
 	"github.com/Vaxuite/dbpool/proxy"
 	"github.com/Vaxuite/dbpool/server"
+	"github.com/sirupsen/logrus"
 )
 
-func main() {
-	pools := map[string]*pool.Database{}
-	for _, node := range config.GetNodes() {
-		pools[node.Database] = pool.NewDatabase(node)
-	}
+var log = logrus.New()
 
-	proxy := proxy.NewProxy(pools["jack"])
+func main() {
+	config := config2.NewConfig()
+	config.AddConfig(network.ConnectionConfig{
+		Host:        "localhost:5432",
+		Username:    "vaxuite",
+		Database:    "jack",
+		Password:    "pass",
+		MinPoolSize: 5,
+	})
+
+	monitor := pool.NewMonitor()
+	monitor.SetupPools(config)
+
+	proxy := proxy.NewProxy(monitor, config)
 
 	server := server.NewServer(server.Config{
 		Port: 9090,

@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/Vaxuite/dbpool/proxy"
+	"github.com/Vaxuite/dbpool/network"
 	"github.com/sirupsen/logrus"
 	"net"
 	"strconv"
@@ -16,15 +16,19 @@ type Config struct {
 	Port int
 }
 
+type Proxy interface {
+	HandleConnection(client *network.Client) error
+}
+
 type Server struct {
 	waitGroup *sync.WaitGroup
 	config    Config
 	ch        chan bool
-	p         *proxy.Proxy
+	p         Proxy
 	listener  net.Listener
 }
 
-func NewServer(config Config, p *proxy.Proxy) *Server {
+func NewServer(config Config, p Proxy) *Server {
 	s := &Server{
 		config:    config,
 		waitGroup: &sync.WaitGroup{},
@@ -74,7 +78,13 @@ func (s *Server) Serve(l net.Listener) error {
 			continue
 		}
 
-		go s.p.HandleConnection(proxy.NewClient(conn))
+		go func() {
+			if err := s.p.HandleConnection(network.NewClient(conn)); err != nil {
+				if err := conn.Close(); err != nil {
+					log.WithError(err).Warn("failed to close connection")
+				}
+			}
+		}()
 	}
 }
 

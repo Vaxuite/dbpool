@@ -1,9 +1,10 @@
 package proxy
 
 import (
-	"dbpool/pool"
-	"dbpool/protocol"
 	"fmt"
+	"github.com/Vaxuite/dbpool/network"
+	"github.com/Vaxuite/dbpool/pool"
+	"github.com/Vaxuite/dbpool/protocol"
 	"github.com/sirupsen/logrus"
 	"io"
 	"net"
@@ -15,52 +16,77 @@ var (
 	log = logrus.New()
 )
 
-type Proxy struct {
-	writePool *pool.Database
-	clients   []net.Conn
-	lock      *sync.Mutex
+type Monitor interface {
+	Pool(database string) *pool.Database
 }
 
-func NewProxy(writePool *pool.Database) *Proxy {
+type Config interface {
+	ConnectionConfig(dbName string) (network.ConnectionConfig, bool)
+}
+
+type Proxy struct {
+	monitor Monitor
+	clients []net.Conn
+	lock    *sync.Mutex
+	config  Config
+}
+
+func NewProxy(monitor Monitor, config Config) *Proxy {
 	p := &Proxy{
-		lock:      &sync.Mutex{},
-		writePool: writePool,
+		config:  config,
+		lock:    &sync.Mutex{},
+		monitor: monitor,
 	}
 
 	return p
 }
 
-func (p *Proxy) ValidateAndAuthenticate(message []byte, client *Client) {
-	/*
-	 * Validate that the client username and database are the same as that
-	 * which is configured for the proxy connections.
-	 *
-	 * If the the client cannot be validated then send an appropriate PG error
-	 * message back to the client.
-	 */
-	if !ValidateClient(message) {
-		pgError := protocol.Error{
-			Severity: protocol.ErrorSeverityFatal,
-			Code:     protocol.ErrorCodeInvalidAuthorizationSpecification,
-			Message:  "could not validate user/database",
-		}
-
-		client.Send(pgError.GetMessage())
-		log.Error("Could not validate client")
+func (p *Proxy) ValidateAndAuthenticate(message []byte, length int, client *network.Client) (string, bool) {
+	pgError := protocol.Error{
+		Severity: protocol.ErrorSeverityFatal,
+		Code:     protocol.ErrorCodeInvalidAuthorizationSpecification,
+		Message:  "could not validate user/database",
 	}
 
-	client.AuthenticateClient()
+	dbName, user := client.Validate(message)
+
+	dbConfig, ok := p.config.ConnectionConfig(dbName)
+	if !ok {
+		client.SendError(pgError)
+		return "", false
+	}
+	if dbConfig.Username != user {
+		client.SendError(pgError)
+		return "", false
+	}
+
+	ok, err := client.AuthenticateClient(dbConfig.Password)
+	if err != nil || !ok {
+		client.SendError(protocol.Error{
+			Severity: protocol.ErrorSeverityFatal,
+			Code:     protocol.ErrorCodeInvalidAuthorizationSpecification,
+			Message:  "password supplied was incorrect",
+		})
+		if err != nil {
+			log.WithError(err).Warn("failed to complete password flow")
+		}
+		return "", false
+	}
+	return dbName, true
 }
 
 // HandleConnection handle an incoming connection to the proxy
-func (p *Proxy) HandleConnection(client *Client) error {
+func (p *Proxy) HandleConnection(client *network.Client) error {
 	/* Get the client startup message. */
-	message, _, err := client.Receive()
+	message, length, err := client.Receive()
 	if err != nil {
 		return fmt.Errorf("failed to recieve message from client: %w", err)
 	}
 
-	p.ValidateAndAuthenticate(message, client)
+	dbName, ok := p.ValidateAndAuthenticate(message, length, client)
+	if !ok {
+		return fmt.Errorf("failed to authenticate")
+	}
 
 	/* Process the client messages for the life of the connection. */
 	for {
@@ -95,7 +121,8 @@ func (p *Proxy) HandleConnection(client *Client) error {
 					client.SendError(err)
 					continue
 				}
-				backend := p.writePool.GetConn()
+				pool := p.monitor.Pool(dbName)
+				backend := pool.GetConn()
 				client.TransactionBackend = backend
 			}
 
@@ -165,7 +192,7 @@ func (s transactionStatus) String() string {
 	panic("not reached")
 }
 
-func (p *Proxy) handleStatement(client *Client, message []byte, length int) (bool, bool, *protocol.Error) {
+func (p *Proxy) handleStatement(client *network.Client, message []byte, length int) (bool, bool, *protocol.Error) {
 	if _, err := client.TransactionBackend.Send(message[:length]); err != nil {
 		return false, true, &protocol.Error{
 			Severity: protocol.ErrorSeverityFatal,
