@@ -85,7 +85,7 @@ func (c *Remote) handleAuthClearText() (bool, error) {
 
 func (c *Remote) Shutdown() {
 	if err := c.conn.Close(); err != nil {
-		log.WithError(err).Warn("failed to close remote connection %s", c.RemoteAddr())
+		log.WithError(err).Warnf("failed to close remote connection %s", c.RemoteAddr())
 	}
 }
 
