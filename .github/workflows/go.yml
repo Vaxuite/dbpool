@@ -11,8 +11,12 @@ on:
   pull_request:
     branches: [ "main" ]
 
-jobs:
 
+permissions:
+  contents: write
+  packages: write
+
+jobs:
   build:
     runs-on: ubuntu-latest
     steps:
