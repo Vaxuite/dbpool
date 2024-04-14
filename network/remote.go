@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/Vaxuite/dbpool/protocol"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/sync/semaphore"
 	"net"
 	"sync"
 )
@@ -16,23 +18,30 @@ var (
 
 type ConnectionConfig struct {
 	Host        string
+	Port        string
 	Username    string
 	Database    string
 	Password    string
 	MinPoolSize int
 	MaxPoolSize int
+	SSLMode     string
 }
 
 type Remote struct {
-	Config ConnectionConfig
-	conn   net.Conn
-	lock   sync.RWMutex
-	InUse  bool
+	ID           uuid.UUID
+	Config       ConnectionConfig
+	conn         net.Conn
+	lock         sync.RWMutex
+	currentConns *semaphore.Weighted
+	readd        func(r *Remote)
 }
 
-func NewRemote(config ConnectionConfig) *Remote {
+func NewRemote(config ConnectionConfig, currentConns *semaphore.Weighted, readd func(r *Remote)) *Remote {
 	return &Remote{
-		Config: config,
+		ID:           uuid.New(),
+		currentConns: currentConns,
+		readd:        readd,
+		Config:       config,
 	}
 }
 
@@ -43,7 +52,7 @@ func (c *Remote) RemoteAddr() net.Addr {
 func (c *Remote) Connect() error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
-	conn, err := c.dial(c.Config.Host)
+	conn, err := c.dial(c.Config.Host + ":" + c.Config.Port)
 	if err != nil {
 		return fmt.Errorf("failed to connect to remote: %w", err)
 	}
@@ -53,7 +62,7 @@ func (c *Remote) Connect() error {
 		return fmt.Errorf("failed to send startup message: %w", err)
 	}
 
-	if ok, err := c.HandleAuthenticationRequest(); err != nil || ok {
+	if ok, err := c.HandleAuthenticationRequest(); err != nil || !ok {
 		if err != nil {
 			return fmt.Errorf("failed to authenticate: %w", err)
 		}
@@ -65,7 +74,6 @@ func (c *Remote) Connect() error {
 }
 
 func (c *Remote) handleAuthClearText() (bool, error) {
-	fmt.Println(c.Config.Password + c.Config.Username)
 	password := c.Config.Password
 	passwordMessage := protocol.CreatePasswordMessage(password)
 
@@ -84,6 +92,7 @@ func (c *Remote) handleAuthClearText() (bool, error) {
 }
 
 func (c *Remote) Shutdown() {
+	c.currentConns.Release(1)
 	if err := c.conn.Close(); err != nil {
 		log.WithError(err).Warnf("failed to close remote connection %s", c.RemoteAddr())
 	}
@@ -120,20 +129,8 @@ func (c *Remote) HandleAuthenticationRequest() (bool, error) {
 	return false, nil
 }
 
-func (c *Remote) Acquire() bool {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	if c.InUse {
-		return false
-	}
-	c.InUse = true
-	return true
-}
-
 func (c *Remote) Release() {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	c.InUse = false
+	c.readd(c)
 }
 
 func (c *Remote) Send(message []byte) (int, error) {

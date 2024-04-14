@@ -13,6 +13,7 @@ var (
 )
 
 type Config struct {
+	Host string
 	Port int
 }
 
@@ -41,7 +42,7 @@ func NewServer(config Config, p Proxy) *Server {
 
 func (s *Server) Start() error {
 	log.Info("Proxy Server Starting...")
-	proxyListener, err := net.Listen("tcp", ":"+strconv.Itoa(s.config.Port))
+	proxyListener, err := net.Listen("tcp", s.config.Host+":"+strconv.Itoa(s.config.Port))
 	if err != nil {
 		return err
 	}

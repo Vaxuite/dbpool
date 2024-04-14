@@ -1,23 +1,37 @@
 package pool
 
 import (
+	"context"
+	"fmt"
 	"github.com/Vaxuite/dbpool/network"
 	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 	"sync"
 )
 
 type Database struct {
 	lock             sync.Mutex
-	connections      []*network.Remote
+	connections      chan *network.Remote
 	connectionConfig network.ConnectionConfig
+	currentConns     *semaphore.Weighted
 }
 
 func NewDatabase(connectionConfig network.ConnectionConfig) (*Database, error) {
-	d := &Database{connectionConfig: connectionConfig}
-	if err := d.setupPool(); err != nil {
-		return nil, err
+	d := &Database{
+		connectionConfig: connectionConfig,
+		currentConns:     semaphore.NewWeighted(int64(connectionConfig.MaxPoolSize)),
+		connections:      make(chan *network.Remote, 10000),
 	}
+
 	return d, nil
+}
+
+func (d *Database) monitorConnections() {
+	for {
+		if err := d.makeConnection(); err != nil {
+			log.WithError(err).Error("failed to make connection")
+		}
+	}
 }
 
 func (d *Database) setupPool() error {
@@ -31,32 +45,25 @@ func (d *Database) setupPool() error {
 	if err := wg.Wait(); err != nil {
 		return err
 	}
+	go d.monitorConnections()
 	return nil
 }
 
 func (d *Database) makeConnection() error {
-	c := network.NewRemote(d.connectionConfig)
+	d.currentConns.Acquire(context.Background(), 1)
+	fmt.Println("making")
+	c := network.NewRemote(d.connectionConfig, d.currentConns, func(r *network.Remote) {
+		d.connections <- r
+	})
 	if err := c.Connect(); err != nil {
 		return err
 	}
-	d.lock.Lock()
-	d.connections = append(d.connections, c)
-	d.lock.Unlock()
+	//todo: proper context
+
+	d.connections <- c
 	return nil
 }
 
 func (d *Database) GetConn() *network.Remote {
-	d.lock.Lock()
-	defer d.lock.Unlock()
-	for _, c := range d.connections {
-		if c.InUse {
-			continue
-		}
-		ok := c.Acquire()
-		if !ok {
-			continue
-		}
-		return c
-	}
-	return nil
+	return <-d.connections
 }

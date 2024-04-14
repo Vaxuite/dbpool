@@ -111,7 +111,11 @@ func (p *Proxy) HandleConnection(client *network.Client) error {
 		 * determine which backend we need to send it to.
 		 */
 		if messageType == protocol.TerminateMessageType {
-			log.Infof("Client: %s - disconnected", client.RemoteAddr())
+			// todo: we could rollback the remote here instead of closing
+			if client.TransactionBackend != nil {
+				client.TransactionBackend.Shutdown()
+			}
+			client.Close()
 			return nil
 		} else if messageType == protocol.QueryMessageType {
 
@@ -129,13 +133,13 @@ func (p *Proxy) HandleConnection(client *network.Client) error {
 			txEnded, closeConnections, err := p.handleStatement(client, message, length)
 			if err != nil {
 				client.SendError(*err)
+				client.Close()
 				client.TransactionBackend.Shutdown()
-				client.TransactionBackend = nil
+				break
 			}
 			if closeConnections {
 				client.TransactionBackend.Shutdown()
 				client.Close()
-				client.TransactionBackend = nil
 				break
 			}
 			if txEnded {

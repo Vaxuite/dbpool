@@ -1,6 +1,7 @@
 package network
 
 import (
+	"fmt"
 	"github.com/Vaxuite/dbpool/protocol"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ func NewClient(conn net.Conn) *Client {
 
 func (c *Client) Close() {
 	c.conn.Close()
+	c.TransactionBackend = nil
 }
 
 func (c *Client) Send(message []byte) (int, error) {
@@ -66,6 +68,7 @@ func (c *Client) AuthenticateClient(targetPassword string) (bool, error) {
 	if err != nil {
 		// psql will close the connection in this case
 		if err == io.EOF {
+			fmt.Println(1)
 			return false, nil
 		}
 		return false, err
@@ -90,7 +93,7 @@ func (c *Client) AuthenticateClient(targetPassword string) (bool, error) {
 
 	c.SendReadyForQuery()
 
-	return false, nil
+	return true, nil
 }
 
 func (c *Client) Validate(message []byte) (string, string) {
