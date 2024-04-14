@@ -1,7 +1,7 @@
 package server
 
 import (
-	"dbpool/proxy"
+	"github.com/Vaxuite/dbpool/proxy"
 	"github.com/sirupsen/logrus"
 	"net"
 	"strconv"

@@ -1,4 +1,4 @@
-module dbpool
+module github.com/Vaxuite/dbpool
 
 go 1.22.0
 

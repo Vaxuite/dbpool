@@ -2,9 +2,9 @@ package pool
 
 import (
 	"bytes"
-	"dbpool/protocol"
 	"encoding/binary"
 	"fmt"
+	"github.com/Vaxuite/dbpool/protocol"
 	"net"
 	"sync"
 )

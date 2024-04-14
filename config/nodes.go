@@ -1,6 +1,6 @@
 package config
 
-import "dbpool/pool"
+import "github.com/Vaxuite/dbpool/pool"
 
 func GetNodes() map[string]pool.ConnectionConfig {
 	return map[string]pool.ConnectionConfig{

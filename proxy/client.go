@@ -1,8 +1,8 @@
 package proxy
 
 import (
-	"dbpool/pool"
-	"dbpool/protocol"
+	"github.com/Vaxuite/dbpool/pool"
+	"github.com/Vaxuite/dbpool/protocol"
 	"io"
 	"net"
 )
