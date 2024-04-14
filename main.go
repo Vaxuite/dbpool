@@ -1,20 +1,19 @@
 package main
 
 import (
-	"dbpool/config"
-	pool2 "dbpool/pool"
-	proxy2 "dbpool/proxy"
-	"dbpool/server"
+	"github.com/Vaxuite/dbpool/config"
+	"github.com/Vaxuite/dbpool/pool"
+	"github.com/Vaxuite/dbpool/proxy"
+	"github.com/Vaxuite/dbpool/server"
 )
 
 func main() {
-	pools := map[string]*pool2.Database{}
+	pools := map[string]*pool.Database{}
 	for _, node := range config.GetNodes() {
-		pool := pool2.NewDatabase(node)
-		pools[node.Database] = pool
+		pools[node.Database] = pool.NewDatabase(node)
 	}
 
-	proxy := proxy2.NewProxy(pools["jack"])
+	proxy := proxy.NewProxy(pools["jack"])
 
 	server := server.NewServer(server.Config{
 		Port: 9090,
