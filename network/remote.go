@@ -2,6 +2,7 @@ package network
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"github.com/Vaxuite/dbpool/protocol"
@@ -10,6 +11,14 @@ import (
 	"golang.org/x/sync/semaphore"
 	"net"
 	"sync"
+)
+
+const (
+	/* SSL Modes */
+	SSL_MODE_REQUIRE     string = "require"
+	SSL_MODE_VERIFY_CA   string = "verify-ca"
+	SSL_MODE_VERIFY_FULL string = "verify-full"
+	SSL_MODE_DISABLE     string = "disable"
 )
 
 var (
@@ -45,24 +54,24 @@ func NewRemote(config ConnectionConfig, currentConns *semaphore.Weighted, readd 
 	}
 }
 
-func (c *Remote) RemoteAddr() net.Addr {
-	return c.conn.RemoteAddr()
+func (r *Remote) RemoteAddr() net.Addr {
+	return r.conn.RemoteAddr()
 }
 
-func (c *Remote) Connect() error {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	conn, err := c.dial(c.Config.Host + ":" + c.Config.Port)
+func (r *Remote) Connect() error {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	conn, err := r.dial(r.Config.Host + ":" + r.Config.Port)
 	if err != nil {
 		return fmt.Errorf("failed to connect to remote: %w", err)
 	}
-	c.conn = conn
-	message := protocol.CreateStartupMessage(c.Config.Username, c.Config.Database, map[string]string{})
-	if _, err = c.Send(message); err != nil {
+	r.conn = conn
+	message := protocol.CreateStartupMessage(r.Config.Username, r.Config.Database, map[string]string{})
+	if _, err = r.Send(message); err != nil {
 		return fmt.Errorf("failed to send startup message: %w", err)
 	}
 
-	if ok, err := c.HandleAuthenticationRequest(); err != nil || !ok {
+	if ok, err := r.HandleAuthenticationRequest(); err != nil || !ok {
 		if err != nil {
 			return fmt.Errorf("failed to authenticate: %w", err)
 		}
@@ -73,17 +82,17 @@ func (c *Remote) Connect() error {
 	return nil
 }
 
-func (c *Remote) handleAuthClearText() (bool, error) {
-	password := c.Config.Password
+func (r *Remote) handleAuthClearText() (bool, error) {
+	password := r.Config.Password
 	passwordMessage := protocol.CreatePasswordMessage(password)
 
-	_, err := c.conn.Write(passwordMessage)
+	_, err := r.conn.Write(passwordMessage)
 	if err != nil {
 		return false, err
 	}
 
 	response := make([]byte, 4096)
-	_, err = c.conn.Read(response)
+	_, err = r.conn.Read(response)
 	if err != nil {
 		return false, err
 	}
@@ -91,15 +100,15 @@ func (c *Remote) handleAuthClearText() (bool, error) {
 	return protocol.IsAuthenticationOk(response), nil
 }
 
-func (c *Remote) Shutdown() {
-	c.currentConns.Release(1)
-	if err := c.conn.Close(); err != nil {
-		log.WithError(err).Warnf("failed to close remote connection %s", c.RemoteAddr())
+func (r *Remote) Shutdown() {
+	r.currentConns.Release(1)
+	if err := r.conn.Close(); err != nil {
+		log.WithError(err).Warnf("failed to close remote connection %s", r.RemoteAddr())
 	}
 }
 
-func (c *Remote) HandleAuthenticationRequest() (bool, error) {
-	message, _, err := c.Receive()
+func (r *Remote) HandleAuthenticationRequest() (bool, error) {
+	message, _, err := r.Receive()
 	if err != nil {
 		return false, err
 	}
@@ -118,7 +127,7 @@ func (c *Remote) HandleAuthenticationRequest() (bool, error) {
 	switch authType {
 	case protocol.AuthenticationClearText:
 		log.Debug("Authenticating with clear text password.")
-		return c.handleAuthClearText()
+		return r.handleAuthClearText()
 	case protocol.AuthenticationOk:
 		/* Covers the case where the authentication type is 'cert' or 'trust' */
 		return true, nil
@@ -129,24 +138,69 @@ func (c *Remote) HandleAuthenticationRequest() (bool, error) {
 	return false, nil
 }
 
-func (c *Remote) Release() {
-	c.readd(c)
+func (r *Remote) Release() {
+	r.readd(r)
 }
 
-func (c *Remote) Send(message []byte) (int, error) {
-	return c.conn.Write(message)
+func (r *Remote) Send(message []byte) (int, error) {
+	return r.conn.Write(message)
 }
 
-func (c *Remote) Receive() ([]byte, int, error) {
+func (r *Remote) Receive() ([]byte, int, error) {
 	buffer := make([]byte, 4096)
-	length, err := c.conn.Read(buffer)
+	length, err := r.conn.Read(buffer)
 	return buffer, length, err
 }
 
-func (c *Remote) dial(host string) (net.Conn, error) {
+func (r *Remote) dial(host string) (net.Conn, error) {
 	connection, err := net.Dial("tcp", host)
 	if err != nil {
 		return nil, err
 	}
+
+	//todo: improve this
+	if r.Config.SSLMode == "require" {
+		message := protocol.NewMessageBuffer([]byte{})
+		message.WriteInt32(8)
+		message.WriteInt32(protocol.SSLRequestCode)
+
+		/* Send the SSL request message. */
+		_, err := connection.Write(message.Bytes())
+		/* Receive SSL response message. */
+		response := make([]byte, 4096)
+		_, err = connection.Read(response)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(response) > 0 && response[0] != 'S' {
+			log.Error("The backend does not allow SSL connections.")
+			connection.Close()
+			return nil, fmt.Errorf("backend does not support ssl")
+		} else {
+			log.Debug("Attempting to upgrade connection.")
+			connection = r.upgradeClientConnection(connection)
+			log.Debug("Connection successfully upgraded.")
+		}
+	}
 	return connection, nil
+}
+
+func (r *Remote) upgradeClientConnection(connection net.Conn) net.Conn {
+	tlsConfig := tls.Config{}
+
+	switch r.Config.SSLMode {
+	case SSL_MODE_REQUIRE:
+		tlsConfig.InsecureSkipVerify = true
+	case SSL_MODE_DISABLE:
+		return connection
+	default:
+		log.Fatalf("Unsupported sslmode %s\n", r.Config.SSLMode)
+	}
+
+	/* Upgrade the connection. */
+	log.Info("Upgrading to SSL connection.")
+	client := tls.Client(connection, &tlsConfig)
+
+	return client
 }
