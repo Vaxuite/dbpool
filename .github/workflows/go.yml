@@ -28,7 +28,7 @@ jobs:
         go-version: '1.22'
 
     - name: Build
-      run: GOOS=linux GOARCH=amd64 go build -o bin/dbpool
+      run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/dbpool
 
     - name: Test
       run: go test -v ./...
